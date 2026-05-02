@@ -2,7 +2,7 @@ import random
 import math
 from statistics import mean, variance
 from typing import Dict, List, Callable
-import mathplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 T_MOD = 14400
 
@@ -474,6 +474,70 @@ def sensitivity_analysis(
     return results
 
 
+def plot_sensitivity(metric_name, x_values, y_values, x_label, y_label, title):
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_values, y_values, "b-o", linewidth=2, markersize=8)
+    plt.xlabel(x_label, fontsize=12)
+    plt.ylabel(y_label, fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_all_wait_times(
+    green1_results, green2_results, arrival1_results, arrival2_results
+):
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    param_configs = [
+        (axes[0, 0], green1_results, "GREEN_TIME_1", "GREEN_TIME_1 (с)"),
+        (axes[0, 1], green2_results, "GREEN_TIME_2", "GREEN_TIME_2 (с)"),
+        (axes[1, 0], arrival1_results, "MEAN_ARRIVAL_1", "MEAN_ARRIVAL_1 (с)"),
+        (axes[1, 1], arrival2_results, "MEAN_ARRIVAL_2", "MEAN_ARRIVAL_2 (с)"),
+    ]
+
+    for ax, results, param_name, x_label in param_configs:
+        x_values = [r["param_value"] for r in results]
+        y_values = [r["avg_wait"] for r in results]
+
+        ax.plot(x_values, y_values, "b-o", linewidth=2, markersize=8)
+        ax.set_xlabel(x_label, fontsize=11)
+        ax.set_ylabel("Среднее время ожидания (с)", fontsize=11)
+        ax.set_title(
+            f"Зависимость среднего времени ожидания от {param_name}", fontsize=12
+        )
+        ax.grid(True, linestyle="--", alpha=0.7)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_all_wait_times_detour(arrival1_results, arrival2_results, rural_results):
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    param_configs = [
+        (axes[0], arrival1_results, "MEAN_ARRIVAL_1", "MEAN_ARRIVAL_1 (с)"),
+        (axes[1], arrival2_results, "MEAN_ARRIVAL_2", "MEAN_ARRIVAL_2 (с)"),
+        (axes[2], rural_results, "MEAN_RURAL", "MEAN_RURAL (с)"),
+    ]
+
+    for ax, results, param_name, x_label in param_configs:
+        x_values = [r["param_value"] for r in results]
+        y_values = [r["avg_wait"] for r in results]
+
+        ax.plot(x_values, y_values, "b-o", linewidth=2, markersize=8)
+        ax.set_xlabel(x_label, fontsize=11)
+        ax.set_ylabel("Среднее время ожидания (с)", fontsize=11)
+        ax.set_title(
+            f"Зависимость среднего времени ожидания от {param_name}", fontsize=12
+        )
+        ax.grid(True, linestyle="--", alpha=0.7)
+
+    plt.tight_layout()
+    plt.show()
+
+
 if __name__ == "__main__":
     print(f"Время моделирования: {T_MOD} секунд, ALPHA = {ALPHA}, EPSILON = {EPSILON}")
 
@@ -507,7 +571,47 @@ if __name__ == "__main__":
         f"    Обслужено автомобилей         : {main_precision['means']['cars_served']:.0f}"
     )
 
+    print("\n" + "=" * 60)
+    print("ПРОВЕРКА УСТОЙЧИВОСТИ ОСНОВНОГО МАРШРУТА")
+    print("=" * 60)
+    stability_results_main = run_stability_check(simulate_main_route, num_runs=10)
+
+    print("\n" + "=" * 60)
+    print("АНАЛИЗ ЧУВСТВИТЕЛЬНОСТИ ДЛЯ ОСНОВНОГО МАРШРУТА")
+    print("=" * 60)
+
+    green1_values = [30, 45, 60, 75, 90, 105, 120]
+    green2_values = [30, 45, 60, 75, 90, 105, 120]
+    arrival1_values = [6, 8, 10, 12, 14, 16, 18]
+    arrival2_values = [6, 8, 10, 12, 14, 16, 18]
+
+    sensitivity_results_green1 = sensitivity_analysis(
+        simulate_main_route, "GREEN_TIME_1", green1_values
+    )
+
+    sensitivity_results_green2 = sensitivity_analysis(
+        simulate_main_route, "GREEN_TIME_2", green2_values
+    )
+
+    sensitivity_results_arrival1 = sensitivity_analysis(
+        simulate_main_route, "MEAN_ARRIVAL_1", arrival1_values
+    )
+
+    sensitivity_results_arrival2 = sensitivity_analysis(
+        simulate_main_route, "MEAN_ARRIVAL_2", arrival2_values
+    )
+
+    plot_all_wait_times(
+        sensitivity_results_green1,
+        sensitivity_results_green2,
+        sensitivity_results_arrival1,
+        sensitivity_results_arrival2,
+    )
+
+    print("\n" + "=" * 60)
     print("2. ОБЪЕЗД (альтернативный маршрут)")
+    print("=" * 60)
+
     detour_precision = run_with_precision(
         simulate_detour, epsilon=EPSILON, alpha=ALPHA, target_metric="avg_travel"
     )
@@ -533,22 +637,33 @@ if __name__ == "__main__":
         f"    Обслужено автомобилей         : {detour_precision['means']['cars_served']:.0f}"
     )
 
-    stability_results = run_stability_check(simulate_main_route, num_runs=10)
+    print("\n" + "=" * 60)
+    print("ПРОВЕРКА УСТОЙЧИВОСТИ ОБЪЕЗДА")
+    print("=" * 60)
+    stability_results_detour = run_stability_check(simulate_detour, num_runs=10)
 
-    sensitivity_results = sensitivity_analysis(
-        simulate_main_route, "GREEN_TIME_1", [30, 45, 60, 75, 90, 105, 120]
+    print("\n" + "=" * 60)
+    print("АНАЛИЗ ЧУВСТВИТЕЛЬНОСТИ ДЛЯ ОБЪЕЗДА")
+    print("=" * 60)
+
+    rural_values = [5, 10, 15, 20, 25, 30, 35]
+
+    detour_sensitivity_arrival1 = sensitivity_analysis(
+        simulate_detour, "MEAN_ARRIVAL_1", arrival1_values
     )
 
-    sensitivity_results_green2 = sensitivity_analysis(
-        simulate_main_route, "GREEN_TIME_2", [30, 45, 60, 75, 90, 105, 120]
+    detour_sensitivity_arrival2 = sensitivity_analysis(
+        simulate_detour, "MEAN_ARRIVAL_2", arrival2_values
     )
 
-    sensitivity_analysis(
-        simulate_main_route, "MEAN_ARRIVAL_1", [6, 8, 10, 12, 14, 16, 18]
+    detour_sensitivity_rural = sensitivity_analysis(
+        simulate_detour, "MEAN_RURAL", rural_values
     )
 
-    sensitivity_analysis(
-        simulate_main_route, "MEAN_ARRIVAL_2", [6, 8, 10, 12, 14, 16, 18]
+    plot_all_wait_times_detour(
+        detour_sensitivity_arrival1,
+        detour_sensitivity_arrival2,
+        detour_sensitivity_rural,
     )
 
     print("3. СРАВНЕНИЕ МАРШРУТОВ")
