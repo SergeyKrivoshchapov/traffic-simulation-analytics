@@ -1,10 +1,15 @@
 import random
 import math
+import uuid
 from statistics import mean, variance
-from typing import Dict, List, Callable, Tuple
+from typing import Dict, List, Callable, Tuple, Optional
 import matplotlib.pyplot as plt
 
-# -------------------- Параметры модели --------------------
+from events import EventLogger, EventType
+from database import SessionLocal, Simulation, init_db
+from ab_testing import ABTest, Variant
+from analytics import SimulationAnalytics
+
 T_MOD = 14400
 
 MEAN_ARRIVAL_1 = 12
@@ -22,7 +27,6 @@ PROB_DETOUR = 0.2
 PROB_MAIN = 0.8
 
 EPS_REL = 0.005
-
 ALPHA = 0.95
 
 ALPHA_TO_T = {
@@ -32,6 +36,8 @@ ALPHA_TO_T = {
     0.95: 1.96,
     0.99: 2.576,
 }
+
+event_logger: Optional[EventLogger] = None
 
 
 def get_t_alpha(alpha: float) -> float:
@@ -46,7 +52,43 @@ def get_t_alpha(alpha: float) -> float:
     raise ValueError(f"alpha={alpha} вне диапазона")
 
 
-def simulate_combined() -> Dict:
+def set_parameters(params: Dict[str, float]) -> None:
+    global T_MOD, MEAN_ARRIVAL_1, MEAN_ARRIVAL_2, GREEN_TIME_1, GREEN_TIME_2
+    global PROB_DETOUR, PROB_MAIN, ENTRY_INTERVAL, DETOUR_TRAVEL_TIME
+    
+    if 'T_MOD' in params:
+        T_MOD = params['T_MOD']
+    if 'MEAN_ARRIVAL_1' in params:
+        MEAN_ARRIVAL_1 = params['MEAN_ARRIVAL_1']
+    if 'MEAN_ARRIVAL_2' in params:
+        MEAN_ARRIVAL_2 = params['MEAN_ARRIVAL_2']
+    if 'GREEN_TIME_1' in params:
+        GREEN_TIME_1 = params['GREEN_TIME_1']
+    if 'GREEN_TIME_2' in params:
+        GREEN_TIME_2 = params['GREEN_TIME_2']
+    if 'PROB_DETOUR' in params:
+        PROB_DETOUR = params['PROB_DETOUR']
+    if 'PROB_MAIN' in params:
+        PROB_MAIN = params['PROB_MAIN']
+    if 'ENTRY_INTERVAL' in params:
+        ENTRY_INTERVAL = params['ENTRY_INTERVAL']
+    if 'DETOUR_TRAVEL_TIME' in params:
+        DETOUR_TRAVEL_TIME = params['DETOUR_TRAVEL_TIME']
+
+
+def simulate_combined(simulation_id: Optional[str] = None, log_events: bool = False) -> Dict:
+    if simulation_id is None:
+        simulation_id = str(uuid.uuid4())
+    
+    global event_logger
+    if log_events:
+        event_logger = EventLogger(simulation_id, capture_events=True)
+    else:
+        event_logger = None
+    
+    if event_logger:
+        event_logger.log_event(EventType.SIMULATION_START, 0)
+    
     current_time = 0
     queue1_light = []
     queue2_light = []
@@ -67,6 +109,7 @@ def simulate_combined() -> Dict:
     total_wait_detour, total_travel_detour, total_cars_detour = 0, 0, 0
     no_wait_detour = 0
     total_wait_rural, total_travel_rural, total_cars_rural = 0, 0, 0
+    no_wait_cars = 0
 
     queue_sum, queue_measurements = 0, 0
 
@@ -89,14 +132,20 @@ def simulate_combined() -> Dict:
 
         while next_arrival1 <= current_time:
             queue1_light.append(next_arrival1)
+            if event_logger:
+                event_logger.log_car_arrival(current_time, 'queue1', len(queue1_light))
             next_arrival1 += random.expovariate(1 / MEAN_ARRIVAL_1)
 
         while next_arrival2 <= current_time:
             queue2_light.append(next_arrival2)
+            if event_logger:
+                event_logger.log_car_arrival(current_time, 'queue2', len(queue2_light))
             next_arrival2 += random.expovariate(1 / MEAN_ARRIVAL_2)
 
         while next_rural <= current_time:
             rural_queue.append(current_time)
+            if event_logger:
+                event_logger.log_car_arrival(current_time, 'rural', len(rural_queue))
             next_rural += random.expovariate(1 / MEAN_RURAL)
 
         no_R1 = len(cars_on_R1_after_light) == 0
@@ -133,6 +182,8 @@ def simulate_combined() -> Dict:
                         total_cars_detour += 1
                         if wait < 0.001:
                             no_wait_detour += 1
+                        if event_logger:
+                            event_logger.log_car_travel(current_time, 1, 'queue1', 'detour', wait, travel)
                         detour_in_transit.append(
                             (
                                 current_time + DETOUR_TRAVEL_TIME,
@@ -142,6 +193,9 @@ def simulate_combined() -> Dict:
 
         green_end = current_time + GREEN_TIME_1
         next_entry_time = current_time
+
+        if event_logger:
+            event_logger.log_light_state(current_time, 1, 'green')
 
         while current_time < green_end and current_time < T_MOD:
             for i, (exit_time, info) in enumerate(detour_in_transit[:]):
@@ -162,18 +216,28 @@ def simulate_combined() -> Dict:
 
             while next_arrival1 <= current_time:
                 queue1_light.append(next_arrival1)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'queue1', len(queue1_light))
                 next_arrival1 += random.expovariate(1 / MEAN_ARRIVAL_1)
 
             while next_arrival2 <= current_time:
                 queue2_light.append(next_arrival2)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'queue2', len(queue2_light))
                 next_arrival2 += random.expovariate(1 / MEAN_ARRIVAL_2)
 
             while next_rural <= current_time:
                 rural_queue.append(current_time)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'rural', len(rural_queue))
                 next_rural += random.expovariate(1 / MEAN_RURAL)
 
             no_R1 = len(cars_on_R1_after_light) == 0
             no_R2 = len(cars_on_R2_after_light) == 0
+
+            if event_logger:
+                event_logger.update_queue_size(current_time, 'queue1', len(queue1_light))
+                event_logger.update_queue_size(current_time, 'queue2', len(queue2_light))
 
             if detour_exit_queue and no_R1 and no_R2:
                 arrival_info = detour_exit_queue.pop(0)
@@ -206,6 +270,8 @@ def simulate_combined() -> Dict:
                             total_cars_detour += 1
                             if wait < 0.001:
                                 no_wait_detour += 1
+                            if event_logger:
+                                event_logger.log_car_travel(current_time, 1, 'queue1', 'detour', wait, travel)
                             detour_in_transit.append(
                                 (
                                     current_time + DETOUR_TRAVEL_TIME,
@@ -222,6 +288,8 @@ def simulate_combined() -> Dict:
                         total_cars_light += 1
                         if wait < 0.001:
                             no_wait_light += 1
+                        if event_logger:
+                            event_logger.log_car_travel(current_time, 1, 'queue1', 'main', wait, travel)
                         cars_on_R1_after_light.append(
                             (current_time + SECTION_TRAVEL_TIME, "W1")
                         )
@@ -236,10 +304,16 @@ def simulate_combined() -> Dict:
             queue_measurements += 1
             current_time += 1
 
+        if event_logger:
+            event_logger.log_light_state(current_time, 1, 'red')
+
         current_time += SECTION_TRAVEL_TIME
 
         green_end = current_time + GREEN_TIME_2
         next_entry_time = current_time
+
+        if event_logger:
+            event_logger.log_light_state(current_time, 2, 'green')
 
         while current_time < green_end and current_time < T_MOD:
             for i, (exit_time, info) in enumerate(detour_in_transit[:]):
@@ -260,18 +334,27 @@ def simulate_combined() -> Dict:
 
             while next_arrival1 <= current_time:
                 queue1_light.append(next_arrival1)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'queue1', len(queue1_light))
                 next_arrival1 += random.expovariate(1 / MEAN_ARRIVAL_1)
 
             while next_arrival2 <= current_time:
                 queue2_light.append(next_arrival2)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'queue2', len(queue2_light))
                 next_arrival2 += random.expovariate(1 / MEAN_ARRIVAL_2)
 
             while next_rural <= current_time:
                 rural_queue.append(current_time)
+                if event_logger:
+                    event_logger.log_car_arrival(current_time, 'rural', len(rural_queue))
                 next_rural += random.expovariate(1 / MEAN_RURAL)
 
             no_R1 = len(cars_on_R1_after_light) == 0
             no_R2 = len(cars_on_R2_after_light) == 0
+
+            if event_logger:
+                event_logger.update_queue_size(current_time, 'queue2', len(queue2_light))
 
             if detour_exit_queue and no_R1 and no_R2:
                 arrival_info = detour_exit_queue.pop(0)
@@ -300,6 +383,8 @@ def simulate_combined() -> Dict:
                 total_cars_light += 1
                 if wait < 0.001:
                     no_wait_light += 1
+                if event_logger:
+                    event_logger.log_car_travel(current_time, 2, 'queue2', 'main', wait, travel)
                 cars_on_R2_after_light.append(
                     (current_time + SECTION_TRAVEL_TIME, "W2")
                 )
@@ -314,7 +399,13 @@ def simulate_combined() -> Dict:
             queue_measurements += 1
             current_time += 1
 
+        if event_logger:
+            event_logger.log_light_state(current_time, 2, 'red')
+
         current_time += SECTION_TRAVEL_TIME
+
+    if event_logger:
+        event_logger.log_event(EventType.SIMULATION_END, current_time)
 
     total_cars = total_cars_light + total_cars_detour + total_cars_rural
     total_wait = total_wait_light + total_wait_detour + total_wait_rural
@@ -328,6 +419,7 @@ def simulate_combined() -> Dict:
     throughput = total_cars / T_MOD
 
     return {
+        "simulation_id": simulation_id,
         "avg_wait": avg_wait,
         "avg_travel": avg_travel,
         "avg_queue": avg_queue,
@@ -337,25 +429,60 @@ def simulate_combined() -> Dict:
         "cars_light": total_cars_light,
         "cars_detour": total_cars_detour,
         "cars_rural": total_cars_rural,
-        "avg_wait_light": total_wait_light / total_cars_light
-        if total_cars_light
-        else 0,
-        "avg_travel_light": total_travel_light / total_cars_light
-        if total_cars_light
-        else 0,
-        "avg_wait_detour": total_wait_detour / total_cars_detour
-        if total_cars_detour
-        else 0,
-        "avg_travel_detour": total_travel_detour / total_cars_detour
-        if total_cars_detour
-        else 0,
-        "avg_wait_rural": total_wait_rural / total_cars_rural
-        if total_cars_rural
-        else 0,
-        "avg_travel_rural": total_travel_rural / total_cars_rural
-        if total_cars_rural
-        else 0,
+        "avg_wait_light": total_wait_light / total_cars_light if total_cars_light else 0,
+        "avg_travel_light": total_travel_light / total_cars_light if total_cars_light else 0,
+        "avg_wait_detour": total_wait_detour / total_cars_detour if total_cars_detour else 0,
+        "avg_travel_detour": total_travel_detour / total_cars_detour if total_cars_detour else 0,
+        "avg_wait_rural": total_wait_rural / total_cars_rural if total_cars_rural else 0,
+        "avg_travel_rural": total_travel_rural / total_cars_rural if total_cars_rural else 0,
     }
+
+
+def save_simulation_to_db(results: Dict, simulation_name: str = "simulation") -> None:
+    try:
+        db = SessionLocal()
+        
+        sim = Simulation(
+            id=results.get("simulation_id", str(uuid.uuid4())),
+            simulation_name=simulation_name,
+            t_mod=T_MOD,
+            mean_arrival_1=MEAN_ARRIVAL_1,
+            mean_arrival_2=MEAN_ARRIVAL_2,
+            green_time_1=GREEN_TIME_1,
+            green_time_2=GREEN_TIME_2,
+            prob_detour=PROB_DETOUR,
+            entry_interval=ENTRY_INTERVAL,
+            avg_wait=results.get("avg_wait"),
+            avg_travel=results.get("avg_travel"),
+            avg_queue=results.get("avg_queue"),
+            free_probability=results.get("free_probability"),
+            throughput=results.get("throughput"),
+            cars_served=results.get("cars_served"),
+            metrics_by_route={
+                "light": {
+                    "avg_wait": results.get("avg_wait_light"),
+                    "avg_travel": results.get("avg_travel_light"),
+                    "cars": results.get("cars_light"),
+                },
+                "detour": {
+                    "avg_wait": results.get("avg_wait_detour"),
+                    "avg_travel": results.get("avg_travel_detour"),
+                    "cars": results.get("cars_detour"),
+                },
+                "rural": {
+                    "avg_wait": results.get("avg_wait_rural"),
+                    "avg_travel": results.get("avg_travel_rural"),
+                    "cars": results.get("cars_rural"),
+                },
+            }
+        )
+        
+        db.add(sim)
+        db.commit()
+        db.close()
+        print(f"✓ Simulation saved to database: {results.get('simulation_id')}")
+    except Exception as e:
+        print(f"✗ Error saving to database: {e}")
 
 
 def stability_check_10runs(
@@ -474,52 +601,73 @@ def run_precision_iterative(
     }
 
 
-def required_runs_for_Tmod(
-    simulate_func: Callable,
-    metric_key: str,
-    T_values: List[float],
-    epsilon_rel: float,
-    alpha: float,
-) -> List[Dict]:
-    original_T = globals()["T_MOD"]
-    t_alpha = get_t_alpha(alpha)
-    results = []
-    for T in T_values:
-        globals()["T_MOD"] = T
-        values = [simulate_func()[metric_key] for _ in range(50)]
-        N = 50
-        while True:
-            var_val = variance(values) if len(values) > 1 else 0.0
-            mean_v = mean(values) if values else 0
-            if mean_v == 0 or var_val == 0:
-                N_star = N
-            else:
-                epsilon_abs = epsilon_rel * mean_v
-                N_star = math.ceil((t_alpha**2 * var_val) / (epsilon_abs**2))
-            if N_star <= N or N_star > 5000:
-                break
-            values.extend(simulate_func()[metric_key] for _ in range(N_star - N))
-            N = N_star
-        results.append(
-            {"T_mod": T, "T_mod_hrs": T / 3600, "N_star": N, "mean": mean(values)}
+def run_ab_test_example() -> None:
+    print("\n" + "=" * 70)
+    print("A/B ТЕСТИРОВАНИЕ: Оптимизация времени светофора")
+    print("=" * 70)
+    
+    test = ABTest(
+        test_name="Light Timing Optimization",
+        variant_a=Variant(
+            name="Conservative (30s/45s)",
+            params={
+                'GREEN_TIME_1': 30,
+                'GREEN_TIME_2': 45,
+            }
+        ),
+        variant_b=Variant(
+            name="Aggressive (40s/55s)",
+            params={
+                'GREEN_TIME_1': 40,
+                'GREEN_TIME_2': 55,
+            }
+        ),
+        description="Comparing conservative vs aggressive traffic light timing strategies"
+    )
+    
+    def apply_params(params):
+        global GREEN_TIME_1, GREEN_TIME_2
+        GREEN_TIME_1 = params.get('GREEN_TIME_1', GREEN_TIME_1)
+        GREEN_TIME_2 = params.get('GREEN_TIME_2', GREEN_TIME_2)
+    
+    test.run(
+        simulate_combined,
+        num_runs=3,
+        param_applier=apply_params,
+    )
+    
+    test.print_summary([
+        'avg_wait',
+        'avg_travel',
+        'throughput',
+        'avg_queue',
+    ])
+    
+    try:
+        db = SessionLocal()
+        from database import ABTest as ABTestModel
+        ab_test_db = ABTestModel(
+            id=test.id,
+            test_name=test.test_name,
+            description=test.description,
+            variant_a_params=test.variant_a.params,
+            variant_b_params=test.variant_b.params,
+            num_runs_per_variant=test.run_count_per_variant,
+            results_summary=test.get_summary_dict(['avg_wait', 'avg_travel', 'throughput']),
+            status='completed',
         )
-    globals()["T_MOD"] = original_T
-    return results
-
-
-def print_Tmod_table(results: List[Dict], metric_label: str):
-    print(f"\nПоказатель: {metric_label}")
-    print(f"{'Эксперимент':<12} {'Tмод, час':<12} {'Число реализаций N*':<20}")
-    print("-" * 45)
-    for i, r in enumerate(results, 1):
-        print(f"{i:<12} {r['T_mod_hrs']:<12.0f} {r['N_star']:<20}")
+        db.add(ab_test_db)
+        db.commit()
+        db.close()
+        print(f"\n✓ A/B test results saved to database: {test.id}")
+    except Exception as e:
+        print(f"✗ Error saving A/B test to database: {e}")
 
 
 def sensitivity_analysis(
     simulate_func: Callable,
     param_name: str,
     param_values: List[float],
-    original_params: Dict = None,
 ) -> List[Dict]:
     print(f"\nАнализ чувствительности к параметру '{param_name}': {param_values}")
     results = []
@@ -540,22 +688,35 @@ def sensitivity_analysis(
     return results
 
 
-def plot_wait(g1, g2, a1, a2):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    for ax, data, name in [
-        (axes[0, 0], g1, "GREEN_TIME_1"),
-        (axes[0, 1], g2, "GREEN_TIME_2"),
-        (axes[1, 0], a1, "MEAN_ARRIVAL_1"),
-        (axes[1, 1], a2, "MEAN_ARRIVAL_2"),
-    ]:
-        x = [r["param_value"] for r in data]
-        y = [r["avg_wait"] for r in data]
-        ax.plot(x, y, "b-o")
-        ax.set_xlabel(name)
-        ax.set_ylabel("Среднее время ожидания")
-        ax.grid(True, linestyle="--", alpha=0.7)
-    plt.tight_layout()
-    plt.show()
+def run_with_logging_demo() -> None:
+    print("\n" + "=" * 70)
+    print("ДЕМОНСТРАЦИЯ: Детальное логирование событий")
+    print("=" * 70)
+    
+    sim_id = str(uuid.uuid4())[:8]
+    print(f"Запуск симуляции с ID: {sim_id}")
+    
+    results = simulate_combined(simulation_id=sim_id, log_events=True)
+    
+    if event_logger:
+        stats = event_logger.get_summary_stats()
+        print(f"\n✓ Logged {stats['total_events']} events")
+        
+        print("\nВиды событий:")
+        for event_type, count in stats['event_types'].items():
+            if count > 0:
+                print(f"  - {event_type}: {count}")
+        
+        print("\nПиковые очереди:")
+        for queue, data in stats['queue_summary'].items():
+            print(f"  - {queue}: макс={data['max_length']:.0f}, сред={data['avg_length']:.1f}")
+        
+        print(f"\nПробок обнаружено: {stats['traffic_jams_count']}")
+        
+        event_logger.export_json(f"simulation_{sim_id}_events.json")
+        print(f"\n✓ Events exported to simulation_{sim_id}_events.json")
+    
+    save_simulation_to_db(results, f"logged_simulation_{sim_id}")
 
 
 if __name__ == "__main__":
@@ -566,13 +727,15 @@ if __name__ == "__main__":
     )
     print("W2 всегда через светофор, W3 — проселочный поток по объезду")
 
+    init_db()
+
     print("\n" + "=" * 70)
     print("КОМБИНИРОВАННАЯ МОДЕЛЬ (светофор + объезд + проселочный поток)")
     print("=" * 70)
 
     print("\n--- 1. Метод по 10 прогонам ---")
     stability_check_10runs(
-        simulate_combined,
+        lambda: simulate_combined(),
         [
             ("avg_travel", "Среднее время проезда"),
             ("avg_wait", "Среднее время ожидания"),
@@ -582,159 +745,19 @@ if __name__ == "__main__":
         epsilon_rel=EPS_REL,
     )
 
-    print("\n--- 2. Итерационный метод (N*) ---")
     res_combined = run_precision_iterative(
-        simulate_combined,
+        lambda: simulate_combined(),
         "avg_travel",
         "Среднее время проезда",
         epsilon_rel=EPS_REL,
         alpha=ALPHA,
     )
 
-    print("\n--- 3. Зависимость N* от Tмод ---")
-    T_values = [3600, 7200, 14400, 28800]
-    print_Tmod_table(
-        required_runs_for_Tmod(
-            simulate_combined, "avg_travel", T_values, EPS_REL, ALPHA
-        ),
-        "Среднее время проезда",
-    )
+    run_ab_test_example()
+    run_with_logging_demo()
 
     print("\n" + "=" * 70)
-    print("АНАЛИЗ ЧУВСТВИТЕЛЬНОСТИ")
+    print("Analysis complete")
+    print("Results saved to PostgreSQL")
+    print("Setup Redash: python redash_setup.py")
     print("=" * 70)
-
-    green1_vals = [
-        15,
-        20,
-        25,
-        30,
-        35,
-        40,
-        45,
-        50,
-        55,
-        60,
-        70,
-        80,
-        90,
-        100,
-        110,
-        120,
-        140,
-        160,
-        180,
-        200,
-        250,
-        300,
-        350,
-        400,
-        500,
-        600,
-    ]
-    green2_vals = [
-        15,
-        20,
-        25,
-        30,
-        35,
-        40,
-        45,
-        50,
-        55,
-        60,
-        70,
-        80,
-        90,
-        100,
-        110,
-        120,
-        140,
-        160,
-        180,
-        200,
-        250,
-        300,
-        350,
-        400,
-        500,
-        600,
-    ]
-    arr1_vals = [
-        10,
-        12,
-        14,
-        16,
-        18,
-        20,
-        22,
-        24,
-        26,
-        28,
-        30,
-        35,
-        40,
-        45,
-        50,
-        60,
-        80,
-        100,
-        120,
-        150,
-        180,
-        200,
-        250,
-        300,
-    ]
-    arr2_vals = [
-        10,
-        12,
-        14,
-        16,
-        18,
-        20,
-        22,
-        24,
-        26,
-        28,
-        30,
-        35,
-        40,
-        45,
-        50,
-        60,
-        80,
-        100,
-        120,
-        150,
-        180,
-        200,
-        250,
-        300,
-    ]
-
-    res_g1 = sensitivity_analysis(simulate_combined, "GREEN_TIME_1", green1_vals)
-    res_g2 = sensitivity_analysis(simulate_combined, "GREEN_TIME_2", green2_vals)
-    res_a1 = sensitivity_analysis(simulate_combined, "MEAN_ARRIVAL_1", arr1_vals)
-    res_a2 = sensitivity_analysis(simulate_combined, "MEAN_ARRIVAL_2", arr2_vals)
-
-    plot_wait(res_g1, res_g2, res_a1, res_a2)
-
-    print("\n" + "=" * 70)
-    print("ИТОГОВЫЕ РЕЗУЛЬТАТЫ")
-    print("=" * 70)
-    print(
-        f"Среднее время проезда = {res_combined['mean']:.2f} с (N={res_combined['final_N']})"
-    )
-
-    result = simulate_combined()
-    print(f"Всего обслужено: {result['cars_served']:.0f}")
-    print(
-        f"  Через светофор (W1+W2): {result['cars_light']:.0f} (среднее время проезда {result['avg_travel_light']:.2f} с)"
-    )
-    print(
-        f"  Через объезд (W1):       {result['cars_detour']:.0f} (среднее время проезда {result['avg_travel_detour']:.2f} с)"
-    )
-    print(
-        f"  Проселочный (W3):        {result['cars_rural']:.0f} (среднее время проезда {result['avg_travel_rural']:.2f} с)"
-    )

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.json
+.env
+redash/
+*.db
+*.sqlite
+.DS_Store
+*.swp
+*.swo
+*~
+.env.local
+.env.*.local
+venv/
+.venv/
+env/
