@@ -1,0 +1,56 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    image: redash/redash:latest
+    restart: unless-stopped
+    command: server
+    ports:
+      - "5000:5000"
+    environment:
+      REDASH_REDIS_URL: "redis://redis:6379/0"
+      REDASH_DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+      REDASH_COOKIE_SECRET: "supersecret123"
+      REDASH_SECRET_KEY: "anothersecret456"
+    depends_on:
+      - postgres
+      - redis
+
+  scheduler:
+    image: redash/redash:latest
+    restart: unless-stopped
+    command: scheduler
+    environment:
+      REDASH_REDIS_URL: "redis://redis:6379/0"
+      REDASH_DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+      REDASH_COOKIE_SECRET: "supersecret123"
+      REDASH_SECRET_KEY: "anothersecret456"
+    depends_on:
+      - server
+
+  worker:
+    image: redash/redash:latest
+    restart: unless-stopped
+    command: worker
+    environment:
+      REDASH_REDIS_URL: "redis://redis:6379/0"
+      REDASH_DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+      REDASH_COOKIE_SECRET: "supersecret123"
+      REDASH_SECRET_KEY: "anothersecret456"
+    depends_on:
+      - server
+
+volumes:
+  pgdata:

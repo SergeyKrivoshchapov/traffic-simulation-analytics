@@ -1,139 +1,79 @@
 import os
 import requests
-import json
-from typing import Dict, List, Optional
 
-class RedashSetup:
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url.rstrip('/')
-        self.api_key = api_key
-        self.headers = {
-            'Authorization': f'Key {api_key}',
-            'Content-Type': 'application/json'
-        }
-        self.db_id = None
-        self.query_ids = {}
+REDASH_URL = os.getenv("REDASH_API_URL", "http://localhost:5000")
+REDASH_KEY = os.getenv("REDASH_API_KEY")
 
-    def create_datasource(self, db_url: str) -> int:
-        endpoint = f'{self.base_url}/api/data_sources'
-        parsed_url = self._parse_db_url(db_url)
-        payload = {
-            'name': 'Traffic Simulation DB',
-            'type': 'pg',
-            'options': {
-                'host': parsed_url['host'],
-                'port': parsed_url['port'],
-                'user': parsed_url['user'],
-                'password': parsed_url['password'],
-                'dbname': parsed_url['dbname']
-            }
-        }
-        response = requests.post(endpoint, json=payload, headers=self.headers)
-        if response.status_code == 200:
-            self.db_id = response.json()['id']
-            print(f"Created datasource: {self.db_id}")
-            return self.db_id
-        else:
-            print(f"Error creating datasource: {response.text}")
-            return None
+if not REDASH_KEY:
+    print("REDASH_API_KEY not set")
+    exit(1)
 
-    def create_query(self, name: str, sql: str) -> Optional[int]:
-        endpoint = f'{self.base_url}/api/queries'
-        payload = {
-            'name': name,
-            'data_source_id': self.db_id,
-            'query': sql
-        }
-        response = requests.post(endpoint, json=payload, headers=self.headers)
-        if response.status_code == 200:
-            query_id = response.json()['id']
-            self.query_ids[name] = query_id
-            print(f"Created query: {name} ({query_id})")
-            return query_id
-        else:
-            print(f"Error creating query {name}: {response.text}")
-            return None
+HEADERS = {"Authorization": f"Key {REDASH_KEY}", "Content-Type": "application/json"}
 
-    def create_dashboard(self, title: str, query_ids: List[int]) -> Optional[int]:
-        endpoint = f'{self.base_url}/api/dashboards'
-        payload = {
-            'name': title,
-            'widgets': []
-        }
-        for qid in query_ids:
-            payload['widgets'].append({
-                'type': 'query',
-                'query_id': qid,
-                'visualization': 'TABLE',
-                'width': 1
-            })
-        response = requests.post(endpoint, json=payload, headers=self.headers)
-        if response.status_code == 200:
-            dashboard_id = response.json()['id']
-            print(f"Created dashboard: {title} ({dashboard_id})")
-            return dashboard_id
-        else:
-            print(f"Error creating dashboard: {response.text}")
-            return None
+resp = requests.get(f"{REDASH_URL}/api/data_sources", headers=HEADERS)
+datasources = resp.json()
+ds_id = None
+for ds in datasources:
+    if ds.get("name") == "Traffic Simulation DB":
+        ds_id = ds["id"]
+        break
 
-    def _parse_db_url(self, db_url: str) -> Dict:
-        if db_url.startswith('postgresql://'):
-            db_url = db_url.replace('postgresql://', '')
-        if '@' in db_url:
-            auth, host_db = db_url.split('@')
-            if ':' in auth:
-                user, password = auth.split(':')
-            else:
-                user, password = auth, ''
-        else:
-            user, password = 'postgres', ''
-            host_db = db_url
-        if '/' in host_db:
-            host_port, dbname = host_db.split('/')
-        else:
-            host_port = host_db
-            dbname = 'traffic_simulation'
-        if ':' in host_port:
-            host, port = host_port.split(':')
-            port = int(port)
-        else:
-            host = host_port
-            port = 5432
-        return {
-            'host': host,
-            'port': port,
-            'user': user,
-            'password': password,
-            'dbname': dbname
-        }
-
-def setup_dashboard(redash_url: str, redash_key: str, db_url: str):
-    setup = RedashSetup(redash_url, redash_key)
-    setup.create_datasource(db_url)
-    
-    queries = {
-        'Simulation Summary': "SELECT COUNT(*) as total, ROUND(AVG(avg_wait)::numeric,2) as avg_wait FROM simulations",
-        'Queue by Hour': "SELECT (timestamp/3600)::integer as hour, ROUND(AVG(queue_length_total)::numeric,1) as avg_queue FROM metric_snapshots GROUP BY hour ORDER BY hour",
-        'Traffic Jams': "SELECT details->>'queue' as queue, COUNT(*) as jams FROM simulation_events WHERE event_type='traffic_jam_created' GROUP BY queue",
-        'Route Efficiency': "SELECT 'light' as route, ROUND(AVG((metrics_by_route->'light'->>'avg_wait')::numeric),2) as avg_wait FROM simulations WHERE metrics_by_route->'light' IS NOT NULL",
-        'Top Simulations': "SELECT simulation_name, ROUND(avg_wait::numeric,2) as wait_time FROM simulations ORDER BY avg_wait ASC LIMIT 10"
+if not ds_id:
+    payload = {
+        "name": "Traffic Simulation DB",
+        "type": "pg",
+        "options": {
+            "host": "host.docker.internal",
+            "port": 5432,
+            "user": "postgres",
+            "password": "postgres",
+            "dbname": "traffic_simulation",
+        },
     }
-    
-    query_ids = []
-    for name, sql in queries.items():
-        query_id = setup.create_query(name, sql)
-        if query_id:
-            query_ids.append(query_id)
-    
-    if query_ids:
-        setup.create_dashboard('Traffic Simulation Analytics', query_ids)
-        print("Dashboard setup complete!")
-
-if __name__ == '__main__':
-    redash_url = os.getenv('REDASH_API_URL', 'http://localhost:5000')
-    redash_key = os.getenv('REDASH_API_KEY', '')
-    db_url = os.getenv('DATABASE_URL', 'postgresql://postgres@localhost/traffic_simulation')
-    if not redash_key:
-        print("Error: REDASH_API_KEY not set")
+    resp = requests.post(
+        f"{REDASH_URL}/api/data_sources", json=payload, headers=HEADERS
+    )
+    if resp.status_code == 200:
+        ds_id = resp.json()["id"]
+    else:
+        print(f"Failed to create datasource: {resp.text}")
         exit(1)
-    setup_dashboard(redash_url, redash_key, db_url)
+
+queries = {
+    "Simulation Summary": """
+        SELECT 
+            COUNT(*) as total,
+            ROUND(AVG(avg_wait)::numeric, 2) as avg_wait_sec,
+            ROUND(AVG(avg_travel)::numeric, 2) as avg_travel_sec,
+            SUM(cars_served) as total_cars
+        FROM simulations
+    """,
+    "Route Comparison": """
+        SELECT 
+            'light' as route,
+            ROUND(AVG((metrics_by_route->'light'->>'avg_wait')::numeric), 2) as avg_wait
+        FROM simulations WHERE metrics_by_route->'light' IS NOT NULL
+        UNION ALL
+        SELECT 
+            'detour',
+            ROUND(AVG((metrics_by_route->'detour'->>'avg_wait')::numeric), 2)
+        FROM simulations WHERE metrics_by_route->'detour' IS NOT NULL
+        UNION ALL
+        SELECT 
+            'rural',
+            ROUND(AVG((metrics_by_route->'rural'->>'avg_wait')::numeric), 2)
+        FROM simulations WHERE metrics_by_route->'rural' IS NOT NULL
+    """,
+    "A/B Test Results": """
+        SELECT test_name, status, results_summary
+        FROM ab_tests
+        WHERE status = 'completed'
+        ORDER BY created_at DESC
+    """,
+}
+
+for name, sql in queries.items():
+    payload = {"name": name, "data_source_id": ds_id, "query": sql.strip()}
+    resp = requests.post(f"{REDASH_URL}/api/queries", json=payload, headers=HEADERS)
+    if resp.status_code != 200:
+        print(f"Query '{name}' failed: {resp.text}")
